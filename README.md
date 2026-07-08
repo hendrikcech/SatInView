@@ -2,6 +2,9 @@
 
 This repository contains the implementation and artifacts for the paper ***Trajectory-based Serving Satellite Identification with User Terminal's Field-of-View*** accepted in LEO-NET'24.
 
+It was updated for the SIGCOMM'26 paper "Dissecting the StarLink: Characterizing Queuing and Flow Dynamics in the Starlink Network".
+See [Measure and process obstruction data](#measure-and-process-obstruction-data) for the simplified processing script.
+
 Table of Contents
 =================
 
@@ -9,6 +12,7 @@ Table of Contents
 * [Prerequisites](#prerequisites)
 * [Gather new data](#gather-new-data)
 * [Re-generate paper results](#re-generate-paper-results)
+* [Measure and process obstruction data](#measure-and-process-obstruction-data)
 
 ## Background
 
@@ -170,3 +174,39 @@ the matching satellites and have the `matched_satellite_data.csv` dataset.
 Ensure you set your location, dish orientation, and data collection time in the code accordingly, and use the TLE data from the exact time of data collection.
 
 To re-generate the figures in the paper you can run the  `figure.ipynb` notebook.
+
+## Measure and process obstruction data
+1. Adjust `IFCE` (Starlink network interface) and `DISH_ID` (custom name) in `config.py`
+2. Capture data: `uv run --with-requirements requirements.txt main.py`
+3. The relevant data will be saved to `./data/TLE/<current day>`.
+
+    ``` bash
+    $ ls data/TLE/2026-01-11
+    obstruction-data-tum-2026-01-11-00-33-06.csv  starlink-tle-2026-01-11-00-33-00.txt
+    obstruction-data-tum-2026-01-11-01-33-04.csv  starlink-tle-2026-01-11-01-33-00.txt
+    obstruction-data-tum-2026-01-11-02-33-04.csv  starlink-tle-2026-01-11-02-33-00.txt
+    obstruction-data-tum-2026-01-11-03-33-05.csv  starlink-tle-2026-01-11-03-33-00.txt
+    ```
+
+4. To infer which satellite the dish was connected, run `process_obstruction_map.py`. Check out its help message and set the correct location parameters (elevation, etc.). The program will parse all observation files in parallel.
+
+    ``` bash
+    $ uv run process_obstruction_data.py --tles data/TLE/2026-01-11/*txt --obs data/TLE/2026-01-11/
+    *csv -o data/TLE/2026-01-11.csv
+    ```
+
+5. Check out the result.
+
+    ``` bash
+    $ head data/TLE/2026-01-11.csv
+    Timestamp,Connected_Satellite,Generation,Distance,ObservedElevation,MatchedElevation,ObservedAzimuth,MatchedAzimuth
+    2026-01-11 00:33:12+00:00,STARLINK-34913,v2mini,498.1555,75.5738,73.5725,100.3048,96.8861
+    2026-01-11 00:33:13+00:00,STARLINK-34913,v2mini,499.7734,76.8412,72.9078,101.3099,95.212
+    2026-01-11 00:33:14+00:00,STARLINK-34913,v2mini,501.486,74.3025,72.2346,99.4623,93.671
+    2026-01-11 00:33:15+00:00,STARLINK-34913,v2mini,503.2922,74.3025,71.5548,99.4623,92.2498
+    2026-01-11 00:33:16+00:00,STARLINK-34913,v2mini,505.1911,73.1763,70.8699,94.3987,90.9365
+    2026-01-11 00:33:17+00:00,STARLINK-34913,v2mini,507.1817,73.2258,70.1813,90.0,89.7206
+    2026-01-11 00:33:18+00:00,STARLINK-34913,v2mini,509.2628,71.9355,69.4903,90.0,88.5926
+    2026-01-11 00:33:19+00:00,STARLINK-34913,v2mini,511.4333,71.9355,68.798,90.0,87.5442
+    2026-01-11 00:33:20+00:00,STARLINK-34913,v2mini,513.6922,70.6452,68.1053,90.0,86.5678
+    ```
