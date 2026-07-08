@@ -88,7 +88,12 @@ def load_satellites():
 
 
 def collect_obstruction_data():
-    load_satellites()
+    try:
+        load_satellites()
+    except OSError as e:
+        # Celestrak introduced rate limiting; sometimes a 403 HTTP error is returned
+        print(f"Failed loading TLE: {e}")
+        print("Continuing anyway")
 
     start = datetime.now(timezone.utc)
     context = starlink_grpc.ChannelContext(target=STARLINK_GRPC_ADDR_PORT)
