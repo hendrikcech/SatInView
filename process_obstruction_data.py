@@ -251,7 +251,7 @@ def get_compute_intervals(df):
 
 # --- Process raw obstruction map and compute elevation and azimuth ---
 def process_obstruction_data(filename):
-    data = pd.read_csv(filename, sep=',', header=None, names=['Timestamp', 'Y', 'X'])
+    data = pd.read_csv(filename, sep=',', header=None, usecols=[0, 1, 2], names=['Timestamp', 'Y', 'X'])
     data['Timestamp'] = pd.to_datetime(data['Timestamp'], utc=True)
 
     observer_x, observer_y = 62, 62  # Assume this is the observer's pixel location

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+import grpc
 from skyfield.api import load
 
 from config import STARLINK_GRPC_ADDR_PORT, TLE_URL, TLE_DATA_DIR, DISH_ID
@@ -29,12 +30,15 @@ def capture_snr_data(duration_seconds, interval_seconds, context, stop_event=Non
 
     while time.monotonic() < end_time and (stop_event is None or not stop_event.is_set()):
         try:
-            snr_data = starlink_grpc.obstruction_map(context)
-            snr_data_array = np.array(snr_data, dtype=float)
+            map_data = starlink_grpc.get_obstruction_map(context)
+            snr_data_array = np.array(map_data.snr, dtype=float).reshape(
+                map_data.num_rows, map_data.num_cols)
             snr_data_array = (snr_data_array > 0).astype(int)
-            snr_data_array[snr_data_array == -1] = 0
-            snapshots.append(snr_data_array)
-        except starlink_grpc.GrpcError as e:
+            field = map_data.DESCRIPTOR.fields_by_name.get('map_reference_frame')
+            value = getattr(map_data, 'map_reference_frame', None)
+            enum = field.enum_type.values_by_number.get(value) if field and field.enum_type else None
+            snapshots.append((snr_data_array, enum.name if enum else value))
+        except (starlink_grpc.GrpcError, grpc.RpcError, AttributeError, ValueError) as e:
             logger.warning("Failed getting obstruction map data: %s", e)
             break
         if stop_event is not None:
@@ -47,10 +51,15 @@ def capture_snr_data(duration_seconds, interval_seconds, context, stop_event=Non
 
 
 def save_white_pixel_coordinates_xor(directory, snapshots, start_time):
-    previous_snr_data = np.zeros_like(snapshots[0])
+    previous_snr_data = np.zeros_like(snapshots[0][0])
     hold_coord = None
+    previous_frame = snapshots[0][1]
 
-    for i, snr_data in enumerate(snapshots):
+    for i, (snr_data, frame) in enumerate(snapshots):
+        if frame != previous_frame:
+            previous_snr_data = np.zeros_like(snr_data)
+            hold_coord = None
+            previous_frame = frame
         xor_snr_data = np.bitwise_xor(previous_snr_data, snr_data)
         coords = np.argwhere(xor_snr_data == 1)
 
@@ -69,7 +78,7 @@ def save_white_pixel_coordinates_xor(directory, snapshots, start_time):
             DISH_ID, timestamp.strftime("%Y-%m-%d-%H-00-00"))
         with open(day_directory / filename, 'a', newline='') as csvfile:
             csv.writer(csvfile).writerow([
-                timestamp.strftime("%Y-%m-%d %H:%M:%S"), coord[0], coord[1]])
+                timestamp.strftime("%Y-%m-%d %H:%M:%S"), coord[0], coord[1], frame])
         previous_snr_data = snr_data
 
 
