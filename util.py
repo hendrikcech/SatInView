@@ -1,4 +1,5 @@
 import logging
+import queue
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,32 @@ def failed(e: str) -> None:
         f.write("{}: {}\n".format(date_time_string(), e))
 
 
-def run(func):
-    job_thread = threading.Thread(target=func)
+_running = {}
+_failures = queue.Queue()
+
+
+def run(func, *args):
+    previous = _running.get(func)
+    if previous is not None and previous.is_alive():
+        logging.warning("Skipping overlapping job: %s", func.__name__)
+        return previous
+
+    def collect():
+        try:
+            func(*args)
+        except BaseException as error:
+            logging.exception("Job failed: %s", func.__name__)
+            _failures.put(error)
+
+    job_thread = threading.Thread(target=collect, name=func.__name__, daemon=True)
+    _running[func] = job_thread
     job_thread.start()
+    return job_thread
+
+
+def raise_worker_failure():
+    try:
+        error = _failures.get_nowait()
+    except queue.Empty:
+        return
+    raise RuntimeError("Background job failed") from error

@@ -1,8 +1,6 @@
 import logging
-import logging
 import subprocess
 import threading
-import schedule
 
 from config import DATA_DIR, STARLINK_GRPC_ADDR_PORT
 from util import date_time_string, ensure_data_directory
@@ -28,4 +26,4 @@ def grpc_get_status() -> None:
     except subprocess.TimeoutExpired:
         pass
 
-    logger.info("[{}] Next scheduled run at {}".format(name, schedule.next_run()))
+    logger.info("[%s] Collection finished", name)

@@ -4,8 +4,6 @@ import subprocess
 import threading
 from datetime import datetime
 
-import schedule
-
 from config import INTERVAL_MS, INTERVAL_SEC, DURATION, DURATION_SECONDS, IFCE, IRTT_SERVER_PORT, DATA_DIR, IRTT_LOCAL_IP, \
     COUNT, LOCAL_IP, STARLINK_DEFAULT_GW, ENABLE_IRTT
 from util import date_time_string, ensure_data_directory, failed
@@ -44,7 +42,7 @@ def irtt_ping() -> None:
     except Exception as e:
         failed(str(e))
 
-    logger.info("[{}] Next scheduled run at {}".format(name, schedule.next_run()))
+    logger.info("[%s] Collection finished", name)
 
 
 def icmp_ping() -> None:
@@ -60,4 +58,4 @@ def icmp_ping() -> None:
     except subprocess.TimeoutExpired:
         pass
 
-    logger.info("[{}] Next scheduled run at {}".format(name, schedule.next_run()))
+    logger.info("[%s] Collection finished", name)
