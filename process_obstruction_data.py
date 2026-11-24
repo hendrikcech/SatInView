@@ -9,6 +9,7 @@ import math
 import os
 import argparse
 import multiprocessing
+import warnings
 from threading import Lock
 
 # --- Process observed position and match sallites ---
@@ -254,9 +255,14 @@ def get_compute_intervals(df):
 # --- Process raw obstruction map and compute elevation and azimuth ---
 def process_obstruction_data(filename):
     try:
-        data = pd.read_csv(filename, sep=',', header=None, usecols=[0, 1, 2], names=['Timestamp', 'Y', 'X'])
+        data = pd.read_csv(filename, sep=',', header=None, names=['Timestamp', 'Y', 'X', 'Frame'], dtype={'Frame': str})
     except pd.errors.EmptyDataError:
         return pd.DataFrame(columns=['Timestamp', 'Y', 'X', 'Elevation', 'Azimuth'])
+    frames = data['Frame'].fillna('').astype(str).str.strip()
+    if frames.isin(['FRAME_UT', '2']).any():
+        raise ValueError(f"Obstruction CSV {filename} contains FRAME_UT; conversion to Earth-aligned coordinates is not supported")
+    if (~frames.isin(['FRAME_EARTH', '1'])).any():
+        warnings.warn(f"Obstruction CSV {filename} has missing or unknown reference frames; assuming Earth-aligned coordinates", UserWarning)
     partial_coordinates = data[['Y', 'X']].isna().sum(axis=1) == 1
     if partial_coordinates.any():
         raise ValueError(f"Obstruction CSV {filename} has a row with only one coordinate")
@@ -358,9 +364,9 @@ def main_cli():
     parser.add_argument("--obs", nargs="+", required=True, help="csv log files obstruction-data-<name>-<date>.csv") #
     parser.add_argument("--tles", nargs="+", required=True, help="TLE files named starlink-tle-<year>-<month>-<day>-<hour>-<minute>-<second>.txt") #
     parser.add_argument("-o", required=True, help="Write results as csv to this file") #
-    parser.add_argument("--lat", type=float, default=48.267548118257835) #
-    parser.add_argument("--lon", type=float, default=11.668237289960858) #
-    parser.add_argument("--ele", type=float, default=492) #
+    parser.add_argument("--lat", type=float, required=True, help="Observer latitude in degrees") #
+    parser.add_argument("--lon", type=float, required=True, help="Observer longitude in degrees") #
+    parser.add_argument("--ele", type=float, required=True, help="Observer elevation in metres") #
     parser.add_argument("--start", help="Start processing from this date") #
     parser.add_argument("--cpus", help="Start this number of parallel processes", default=multiprocessing.cpu_count(), type=int) #
     # parser.add_argument("-o", help="outdir", required=True) # obstruction-data-<name>-<date>.csv

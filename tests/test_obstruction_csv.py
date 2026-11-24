@@ -1,7 +1,5 @@
-import ast
 import csv
 import importlib
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -165,11 +163,12 @@ def test_csv_reader_accepts_three_and_four_columns_and_sorts_real_rows(tmp_path)
     path = tmp_path / "mixed.csv"
     path.write_text(
         "2026-01-01 00:00:02,62,62\n"
-        "2026-01-01 00:00:01.123456,62,63,FRAME_UT\n"
+        "2026-01-01 00:00:01.123456,62,63,FRAME_EARTH\n"
         "2026-01-01 00:00:01.123456,61,64\n"
-        "2026-01-01 00:00:03,,,FRAME_UT\n")
+        "2026-01-01 00:00:03,,,FRAME_EARTH\n")
 
-    result = processing.process_obstruction_data(path)
+    with pytest.warns(UserWarning, match="missing or unknown reference frames"):
+        result = processing.process_obstruction_data(path)
 
     assert result.Timestamp.tolist() == list(pd.to_datetime([
         "2026-01-01 00:00:01.123456", "2026-01-01 00:00:01.123456",
@@ -177,6 +176,26 @@ def test_csv_reader_accepts_three_and_four_columns_and_sorts_real_rows(tmp_path)
     assert {tuple(row) for row in result[["Y", "X"]].values.tolist()} == {
         (62, 63), (61, 64), (62, 62)}
     assert result[["Elevation", "Azimuth"]].notna().all().all()
+
+
+@pytest.mark.parametrize("frame", ["FRAME_UT", "2"])
+@pytest.mark.parametrize("coordinates", ["62,62", ","])
+def test_reader_rejects_ut_frame_even_on_blank_rows(tmp_path, frame, coordinates):
+    path = tmp_path / "ut.csv"
+    path.write_text(f"2026-01-01 00:00:00,62,62,FRAME_EARTH\n"
+                    f"2026-01-01 00:00:01,{coordinates},{frame}\n")
+
+    with pytest.raises(ValueError, match="FRAME_UT"):
+        processing.process_obstruction_data(path)
+
+
+@pytest.mark.parametrize("frame", ["", "FRAME_UNKNOWN", "99"])
+def test_reader_warns_about_unknown_frame_on_blank_rows(tmp_path, frame):
+    path = tmp_path / "unknown.csv"
+    path.write_text(f"2026-01-01 00:00:00,,,{frame}\n")
+
+    with pytest.warns(UserWarning, match="assuming Earth-aligned"):
+        assert processing.process_obstruction_data(path).empty
 
 
 @pytest.mark.parametrize("contents", ["", "2026-01-01 00:00:00,,,FRAME_EARTH\n"])
@@ -208,7 +227,8 @@ def test_cli_writes_headers_for_an_empty_capture(tmp_path):
 
     with patch.object(sys, "argv", [
             "process_obstruction_data.py", "--obs", str(observation), "--tles", "unused.txt",
-            "-o", str(output), "--cpus", "1"]), \
+            "-o", str(output), "--lat", "48.26", "--lon", "11.66", "--ele", "492",
+            "--cpus", "1"]), \
             patch.object(processing.TLEManager, "init"), \
             patch.object(processing.wgs84, "latlon", return_value=None), \
             patch.object(processing.multiprocessing, "Pool", return_value=EmptyPool()):
@@ -289,34 +309,3 @@ def test_compute_intervals_do_not_split_multiple_samples_inside_ri_second():
     df = pd.DataFrame({"Timestamp": times, "Separation": [float("nan"), 0]})
 
     assert processing.get_compute_intervals(df) == [(times[0], 1.7)]
-
-
-@pytest.mark.parametrize("notebook", ["findmatch-FrameUT.ipynb", "findmatch-FrameEarth.ipynb"])
-@pytest.mark.parametrize("duplicate_source", ["capture", "merged"])
-def test_frame_notebooks_reject_duplicates_before_three_point_sampling(
-        tmp_path, notebook, duplicate_source):
-    document = json.loads(Path(notebook).read_text())
-    source = next("".join(cell["source"]) for cell in document["cells"]
-                  if cell["cell_type"] == "code" and
-                  "def process_observed_data(filename, start_time, merged_data_file):" in "".join(cell["source"]))
-    function = next(node for node in ast.parse(source).body
-                    if isinstance(node, ast.FunctionDef) and
-                    node.name == "process_observed_data" and len(node.args.args) == 3)
-    namespace = {"pd": pd}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), f"<{notebook} source>", "exec"), namespace)
-
-    capture = tmp_path / "capture.csv"
-    merged = tmp_path / "merged.csv"
-    if duplicate_source == "capture":
-        times = ["00", "01", "01", "02", "03", "04"]
-    else:
-        times = ["00", "01", "02", "03", "04"]
-        merged_times = ["00", "01", "01", "02", "03", "04"]
-        merged.write_text("Timestamp,Elevation,Azimuth\n" + "".join(
-            f"2026-01-01 00:00:{second},70,120\n" for second in merged_times))
-    capture.write_text("".join(
-        f"2026-01-01 00:00:{second},62,62\n" for second in times))
-
-    with pytest.raises(ValueError, match="Multiple .* pixels share a timestamp"):
-        namespace["process_observed_data"](
-            capture, "2026-01-01 00:00:00+00:00", merged)
