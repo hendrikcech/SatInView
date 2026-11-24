@@ -87,7 +87,7 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(len(scheduler.jobs), 2)
         status_job = next(job for job in scheduler.jobs if "gRPC" in job.tags)
         self.assertEqual((status_job.interval, status_job.unit), (17, "seconds"))
-        self.assertEqual(next(job for job in scheduler.jobs if "TLE" in job.tags).interval, 6)
+        self.assertEqual(next(job for job in scheduler.jobs if "TLE" in job.tags).interval, 3)
 
     def test_status_interval_must_be_positive(self):
         with patch.object(sys, "argv", ["main.py", "--status-interval", "0"]), \
@@ -149,7 +149,7 @@ class TLETests(unittest.TestCase):
             self.satellite.load_satellites()
             load.assert_called_once_with(str(snapshot))
 
-            stale = time.time() - 6 * 3600 - 1
+            stale = time.time() - 3 * 3600 - 1
             os.utime(snapshot, (stale, stale))
             load.reset_mock()
             self.satellite.load_satellites()

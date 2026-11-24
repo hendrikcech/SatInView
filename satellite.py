@@ -99,7 +99,7 @@ def load_satellites():
     try:
         snapshots = Path(TLE_DATA_DIR).glob("*/starlink-tle-*.txt")
         latest = max(snapshots, key=lambda path: path.stat().st_mtime, default=None)
-        if latest is not None and time.time() - latest.stat().st_mtime < 6 * 3600:
+        if latest is not None and time.time() - latest.stat().st_mtime < 3 * 3600:
             satellites = load.tle_file(str(latest))
         else:
             directory = Path(TLE_DATA_DIR).joinpath(ensure_data_directory(TLE_DATA_DIR))

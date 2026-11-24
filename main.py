@@ -39,7 +39,7 @@ def main():
 
     # scheduler.every(1).hours.at(":00").do(run, icmp_ping).tag("Latency")
     scheduler.every(args.status_interval).seconds.do(run, grpc_get_status).tag("gRPC")
-    scheduler.every(6).hours.do(run, load_satellites).tag("TLE")
+    scheduler.every(3).hours.do(run, load_satellites).tag("TLE")
 
     stop_event = threading.Event()
     run(grpc_get_status)
