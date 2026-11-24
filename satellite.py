@@ -6,7 +6,9 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from http.client import HTTPException
 from pathlib import Path
+from urllib.request import urlopen
 
 import numpy as np
 import grpc
@@ -103,9 +105,21 @@ def load_satellites():
             satellites = load.tle_file(str(latest))
         else:
             directory = Path(TLE_DATA_DIR).joinpath(ensure_data_directory(TLE_DATA_DIR))
-            satellites = load.tle_file(TLE_URL, True, str(directory / f"starlink-tle-{date_time_string()}.txt"))
+            snapshot = directory / f"starlink-tle-{date_time_string()}.txt"
+            with urlopen(TLE_URL, timeout=60) as response:
+                data = response.read()
+            temporary = snapshot.with_suffix(".txt.download")
+            try:
+                temporary.write_bytes(data)
+                downloaded = load.tle_file(str(temporary))
+                if not downloaded:
+                    raise OSError("CelesTrak response contained no TLEs")
+                temporary.replace(snapshot)
+            finally:
+                temporary.unlink(missing_ok=True)
+            satellites = downloaded
         logger.info("Loaded %s Starlink satellites", len(satellites))
-    except OSError:
+    except (OSError, HTTPException):
         logger.exception("Failed loading TLEs; collection will continue and retry at the next TLE job")
 
 

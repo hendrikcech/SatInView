@@ -136,33 +136,50 @@ class TLETests(unittest.TestCase):
         cls.satellite = satellite_module()
 
     def test_missing_fresh_and_stale_tles(self):
+        fixture = Path(__file__).parent / "fixtures/inference/starlink-tle-2026-01-11-00-33-00.txt"
+        data = b"".join(fixture.read_bytes().splitlines(keepends=True)[:3])
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(self.satellite, "TLE_DATA_DIR", Path(directory)), \
-                patch.object(self.satellite.load, "tle_file", return_value=[]) as load:
+                patch.object(self.satellite, "satellites", None), \
+                patch.object(self.satellite, "urlopen") as fetch:
+            fetch.return_value.__enter__.return_value.read.return_value = data
             self.satellite.load_satellites()
-            self.assertEqual(load.call_args.args[:2], (self.satellite.TLE_URL, True))
+            fetch.assert_called_once_with(self.satellite.TLE_URL, timeout=60)
+            snapshot, = Path(directory).glob("*/starlink-tle-*.txt")
+            self.assertEqual(snapshot.read_bytes(), data)
+            self.assertEqual(len(self.satellite.satellites), 1)
 
-            snapshot = Path(directory) / "2026-01-01" / "starlink-tle-test.txt"
-            snapshot.parent.mkdir(exist_ok=True)
-            snapshot.write_text("cached TLE")
-            load.reset_mock()
+            fetch.reset_mock()
             self.satellite.load_satellites()
-            load.assert_called_once_with(str(snapshot))
+            fetch.assert_not_called()
 
             stale = time.time() - 3 * 3600 - 1
             os.utime(snapshot, (stale, stale))
-            load.reset_mock()
             self.satellite.load_satellites()
-            self.assertEqual(load.call_args.args[:2], (self.satellite.TLE_URL, True))
+            fetch.assert_called_once_with(self.satellite.TLE_URL, timeout=60)
 
-    def test_download_failure_preserves_previous_satellites(self):
+    def test_download_timeout_preserves_previous_satellites_and_allows_retry(self):
+        fixture = Path(__file__).parent / "fixtures/inference/starlink-tle-2026-01-11-00-33-00.txt"
+        data = b"".join(fixture.read_bytes().splitlines(keepends=True)[:3])
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(self.satellite, "TLE_DATA_DIR", Path(directory)), \
                 patch.object(self.satellite, "satellites", ["previous"]), \
-                patch.object(self.satellite.load, "tle_file", side_effect=OSError("offline")), \
-                self.assertLogs("satellite", level="ERROR"):
+                patch.object(self.satellite, "urlopen") as fetch:
+            response = fetch.return_value.__enter__.return_value
+            response.read.side_effect = [TimeoutError("read timed out"), b"", data]
+
+            for message in ("read timed out", "contained no TLEs"):
+                with self.assertLogs("satellite", level="ERROR") as logs:
+                    self.satellite.load_satellites()
+                self.assertIn(message, logs.output[0])
+                self.assertEqual(self.satellite.satellites, ["previous"])
+                self.assertEqual(list(Path(directory).glob("*/starlink-tle-*")), [])
+
             self.satellite.load_satellites()
-            self.assertEqual(self.satellite.satellites, ["previous"])
+            self.assertEqual(fetch.call_count, 3)
+            snapshot, = Path(directory).glob("*/starlink-tle-*")
+            self.assertEqual(snapshot.suffix, ".txt")
+            self.assertEqual(snapshot.read_bytes(), data)
 
 
 class ObstructionTests(unittest.TestCase):
