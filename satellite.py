@@ -42,40 +42,52 @@ def get_obstruction_snapshot(context):
 
 class ObstructionMapState:
     def __init__(self):
-        self.clear()
+        self.previous_snr_data = None
+        self.previous_frame = None
+        self.empty_baseline = False
 
     def clear(self):
         self.previous_snr_data = None
         self.previous_frame = None
-        self.hold_coord = None
+        self.empty_baseline = True
 
-    def select_coordinate(self, snr_data, frame):
-        if (self.previous_snr_data is None or frame != self.previous_frame or
-                snr_data.shape != self.previous_snr_data.shape):
-            self.previous_snr_data = np.zeros_like(snr_data)
+    def select_coordinates(self, snr_data, frame):
+        if self.previous_snr_data is None:
+            if self.empty_baseline:
+                self.previous_snr_data = np.zeros_like(snr_data)
+                self.empty_baseline = False
+            else:
+                self.previous_snr_data = snr_data.copy()
+                self.previous_frame = frame
+                return np.empty((0, 2), dtype=int)
             self.previous_frame = frame
-            self.hold_coord = None
+        elif (frame != self.previous_frame or
+              snr_data.shape != self.previous_snr_data.shape):
+            self.previous_snr_data = snr_data.copy()
+            self.previous_frame = frame
+            return np.empty((0, 2), dtype=int)
 
-        coords = np.argwhere(np.bitwise_xor(self.previous_snr_data, snr_data) == 1)
-        if coords.size > 0:
-            self.hold_coord = coords[-1]
-        self.previous_snr_data = snr_data
-        return self.hold_coord
+        coords = np.argwhere((snr_data > 0) & ~(self.previous_snr_data > 0))
+        self.previous_snr_data = snr_data.copy()
+        return coords
 
 
 def save_obstruction_sample(directory, sample, state):
     timestamp, snr_data, frame = sample
-    coord = state.select_coordinate(snr_data, frame)
-    if coord is None:
-        return
+    coords = state.select_coordinates(snr_data, frame)
 
     day_directory = Path(directory) / timestamp.strftime("%Y-%m-%d")
     ensure_directory(str(day_directory))
     filename = "obstruction-data-{}-{}.csv".format(
         DISH_ID, timestamp.strftime("%Y-%m-%d-%H-00-00"))
+    timestamp_text = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    if timestamp.microsecond:
+        timestamp_text += f".{timestamp.microsecond:06d}"
+    rows = ((coord[0], coord[1]) for coord in coords) if coords.size else (("", ""),)
     with open(day_directory / filename, 'a', newline='') as csvfile:
-        csv.writer(csvfile).writerow([
-            timestamp.strftime("%Y-%m-%d %H:%M:%S"), coord[0], coord[1], frame])
+        writer = csv.writer(csvfile)
+        for y, x in rows:
+            writer.writerow([timestamp_text, y, x, frame if frame is not None else ""])
 
 
 def ri_index(timestamp):

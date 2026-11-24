@@ -1,6 +1,6 @@
 # Trajectory-based Serving Satellite Identification with User Terminal's Field-of-View
 
-This repository contains the implementation and artifacts for the paper ***Trajectory-based Serving Satellite Identification with User Terminal's Field-of-View*** accepted in LEO-NET'24.
+This fork builds on the implementation for the LEO-NET'24 paper ***Trajectory-based Serving Satellite Identification with User Terminal's Field-of-View*** by [aliahan/SatInView](https://github.com/aliahan/SatInView).
 
 It was updated for the SIGCOMM'26 paper "Dissecting the StarLink: Characterizing Queuing and Flow Dynamics in the Starlink Network".
 See [Measure and process obstruction data](#measure-and-process-obstruction-data) for the simplified processing script.
@@ -11,7 +11,6 @@ Table of Contents
 * [Background](#background)
 * [Prerequisites](#prerequisites)
 * [Gather new data](#gather-new-data)
-* [Re-generate paper results](#re-generate-paper-results)
 * [Measure and process obstruction data](#measure-and-process-obstruction-data)
 
 ## Background
@@ -83,7 +82,7 @@ Thus, in addition to the method presented in the LEO-NET'24 paper, we also inclu
 + Clone the repository.
 
     ```bash
-    git clone --recurse-submodules https://github.com/aliahan/SatInView.git
+    git clone --recurse-submodules https://github.com/hendrikcech/SatInView.git
     cd SatInView
     ```
 
@@ -116,17 +115,17 @@ apt list --installed | grep ping
 ```
 5. You may also need to assign root privileges to the `ping` command to use the packet intervals less than 200ms or install [`iputils-ping>=20210722`](https://github.com/iputils/iputils/releases/tag/20210722), which [lowered the limit to 2ms](https://github.com/iputils/iputils/issues/317).
 
-6. By default, task scheduling is defined in `main.py` as follows, which can be modified as needed.
-
-```python
-if ENABLE_IRTT:
-    schedule.every(1).hours.at(":00").do(run, irtt_ping).tag("Latency")
-
-schedule.every(1).hours.at(":00").do(run, icmp_ping).tag("Latency")
-schedule.every(1).hours.at(":00").do(run, grpc_get_status).tag("gRPC")
-schedule.every(6).hours.at(":00").do(run, load_satellites).tag("TLE")
-schedule.every(1).hours.at(":00").do(run, collect_obstruction_data).tag("TLE")
-```
+6. `main.py` starts gRPC status and the continuous obstruction worker immediately.
+   Status is one snapshot per poll; use `--status-interval SECONDS` to set the
+   positive polling interval (default: 60). Obstruction maps are polled immediately
+   and about once per second; the map resets at UTC RI boundaries (seconds 12, 27,
+   42, 57). Polling and reset detection can be delayed by a slow gRPC call. Output
+   CSVs rotate by UTC hour and day without restarting the worker. TLEs are
+   checked at startup and every six hours. The newest saved snapshot is reused if its
+   download time (file modification time) is less than six hours ago; otherwise a new
+   one is fetched.
+   Failed TLE downloads are logged and retried at the next six-hour check without
+   stopping collection. ICMP ping is commented out; IRTT remains opt-in.
 
 ### Dish GPS Location
 
@@ -140,7 +139,16 @@ The GPS location is required to calculate and estimate the selected and serving 
 
 ## Gather new data
 
-Run `main.py` to collect the latency data to the Starlink gateway (`100.64.0.1`) and the satellite trajectory data from the obstruction map.
+Run `main.py` to collect dish status and satellite trajectory data from the obstruction map:
+
+```bash
+.venv/bin/python main.py --results /path/to/results
+```
+
+`--results` overrides `DATA_DIR`, which otherwise defaults to `./data`.
+Use an absolute path for unattended collection. Latency collection is disabled by default.
+Status snapshots are collected every 60 seconds by default; configure the interval with
+`--status-interval 120` to poll every two minutes.
 
 By default, the data structure of the collected data is as follows:
 
@@ -162,22 +170,13 @@ data
 + The `grpc` directory contains the dish diagnostic and alignment data from Starlink dish's gRPC interface (`192.168.100.1:9200`).
 + The `latency` directory contains the ICMP ping RTT measurement to Starlink's gateway. When IRTT test is enabled, the IRTT measurement data is stored in the same directory after each round finishes.
 + The `TLE` directory contains the collected obstruction and satellite trajectory data and the TLE snapshots of all Starlink satellites from Celestrak.
-
-## Re-generate paper results
-
-Thank you for your interest in our work. To replicate our results precisely, you will need to have the exact GPS location, UT orientation, and TLE data from the specific time of observation for that UT. Due to privacy concerns, I cannot share this information. However, I encourage you to gather data from your own UT and attempt to replicate the results at your location.
-
-
-After gathering the data, run `findmatch-FrameUT.ipynb` notebook if your dish uses `FRAME_UT` or `findmatch-FrameEarth.ipynb` notebook if your dish uses `FRAME_EARTH`,  to first create the `processed_observed_data.csv` containing the topocentric coordinates of the observed satellites and then to find
-the matching satellites and have the `matched_satellite_data.csv` dataset.
-
-Ensure you set your location, dish orientation, and data collection time in the code accordingly, and use the TLE data from the exact time of data collection.
-
-To re-generate the figures in the paper you can run the  `figure.ipynb` notebook.
++ New obstruction CSV rows contain timestamp, Y, X, and the map reference frame. Older rows have only the first three columns; an empty frame means it was not reported. The Python processing scripts ignore the frame and do not automatically select a coordinate conversion.
++ The headerless CSV remains `Timestamp,Y,X,Frame` (three-column legacy files are accepted). Each successful poll writes all newly positive pixels with one shared timestamp/frame, or one row with blank Y/X when there are no new pixels; failed polls, held pixels, and disappearances produce no observation rows. At startup, the first map initializes the baseline; a successful reset instead establishes an empty baseline so new positives are recorded. Frame/shape changes reinitialize from the current map without reporting its accumulated pixels.
++ A poll can add multiple pixels, so capture is evidence rather than an ordered trajectory. The CLI and frame notebooks reject multiple coordinates with one timestamp instead of guessing their order. Multi-candidate track reconstruction and obstruction detection remain future work. The older frame notebooks also require whole-second timestamps; use the CLI for the fractional timestamps written by continuous capture.
 
 ## Measure and process obstruction data
 1. Adjust `IFCE` (Starlink network interface) and `DISH_ID` (custom name) in `config.py`
-2. Capture data: `uv run --with-requirements requirements.txt main.py`
+2. Initialize the submodule, then capture data: `uv run --with-requirements requirements.txt --with-requirements starlink-grpc-tools/requirements.txt main.py --results ./data`
 3. The relevant data will be saved to `./data/TLE/<current day>`.
 
     ``` bash
@@ -188,11 +187,10 @@ To re-generate the figures in the paper you can run the  `figure.ipynb` notebook
     obstruction-data-tum-2026-01-11-03-33-05.csv  starlink-tle-2026-01-11-03-33-00.txt
     ```
 
-4. To infer which satellite the dish was connected, run `process_obstruction_map.py`. Check out its help message and set the correct location parameters (elevation, etc.). The program will parse all observation files in parallel.
+4. To infer which satellite the dish was connected, run `process_obstruction_data.py`. Check out its help message and set the correct location parameters (elevation, etc.). The program will parse all observation files in parallel.
 
     ``` bash
-    $ uv run process_obstruction_data.py --tles data/TLE/2026-01-11/*txt --obs data/TLE/2026-01-11/
-    *csv -o data/TLE/2026-01-11.csv
+    $ uv run process_obstruction_data.py --tles data/TLE/2026-01-11/*txt --obs data/TLE/2026-01-11/*csv -o data/TLE/2026-01-11.csv
     ```
 
 5. Check out the result.
@@ -210,3 +208,15 @@ To re-generate the figures in the paper you can run the  `figure.ipynb` notebook
     2026-01-11 00:33:19+00:00,STARLINK-34913,v2mini,511.4333,71.9355,68.798,90.0,87.5442
     2026-01-11 00:33:20+00:00,STARLINK-34913,v2mini,513.6922,70.6452,68.1053,90.0,86.5678
     ```
+
+## Tests
+
+Run the unit tests and five-minute historical inference snapshot offline:
+
+```bash
+uv run --no-project --with pytest --with pandas --with numpy --with skyfield --with tqdm --with schedule --with grpcio --with yagrc python -m pytest -q tests
+```
+
+The snapshot takes about 40 seconds on the development machine. See
+[`tests/fixtures/inference/README.md`](tests/fixtures/inference/README.md) for
+the baseline and comparison tolerances.

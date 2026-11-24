@@ -70,6 +70,12 @@ def calculate_total_difference(observed_positions, satellite_positions):
     return total_difference
 
 def find_matching_satellites(satellites, observer_location, observed_positions):
+    timestamps = [observed_time for observed_time, _ in observed_positions]
+    if len(set(timestamps)) != len(timestamps):
+        raise ValueError(
+            "Multiple obstruction pixels share a timestamp; the single-track matcher "
+            "cannot order them. Multi-candidate track reconstruction is not supported.")
+    observed_positions = sorted(observed_positions, key=lambda sample: sample[0])
     best_match = None
     closest_total_difference = float('inf')
 
@@ -81,7 +87,10 @@ def find_matching_satellites(satellites, observer_location, observed_positions):
 
         for observed_time, observed_data in observed_positions:
             difference = satellite - observer_location
-            topocentric = difference.at(ts.utc(observed_time.year, observed_time.month, observed_time.day, observed_time.hour, observed_time.minute, observed_time.second))
+            topocentric = difference.at(ts.utc(
+                observed_time.year, observed_time.month, observed_time.day,
+                observed_time.hour, observed_time.minute,
+                observed_time.second + observed_time.microsecond / 1_000_000))
             alt, az, _ = topocentric.altaz()
 
             if alt.degrees <= 20:
@@ -101,12 +110,14 @@ def find_matching_satellites(satellites, observer_location, observed_positions):
 
     return best_match, closest_total_difference
 
-def calculate_distance_for_best_match(satellite, observer_location, start_time, interval_seconds):
+def calculate_distance_for_best_match(satellite, observer_location, observed_times):
     distances = []
-    for second in range(0, interval_seconds + 1):
-        current_time = start_time + timedelta(seconds=second)
+    ts = load.timescale()
+    for current_time in observed_times:
+        if hasattr(current_time, "to_pydatetime"):
+            current_time = current_time.to_pydatetime()
         difference = satellite - observer_location
-        topocentric = difference.at(current_time)
+        topocentric = difference.at(ts.from_datetime(current_time))
         distance = topocentric.distance().km
         distances.append(distance)
     return distances
@@ -145,8 +156,6 @@ def get_observed_positions(df):
 def process_second(df, current_time, observer_location, satellites):
     observed_positions, matching_satellite, matching_satellite_positions, match_error, distances = \
         None, None, [], None, []
-    sky_time = load.timescale().from_datetime(current_time)
-
     observed_positions = get_observed_positions(df)
     if observed_positions is None:
         return observed_positions, matching_satellite, matching_satellite_positions, match_error, distances
@@ -157,7 +166,9 @@ def process_second(df, current_time, observer_location, satellites):
 
     matching_satellite, matching_satellite_positions = matching_satellite
 
-    distances = calculate_distance_for_best_match(matching_satellite, observer_location, sky_time, 14)
+    distances = calculate_distance_for_best_match(
+        matching_satellite, observer_location,
+        [observed_time for observed_time, _ in observed_positions])
 
     return observed_positions, matching_satellite, matching_satellite_positions, match_error, distances
 
@@ -201,25 +212,20 @@ def process_interval(args):
 
     df_end_time = current_time + pd.Timedelta(seconds=duration_s)
     df_lens = df[(df['Timestamp'] >= current_time) & ((df['Timestamp'] < df_end_time))]
+    df_lens = df_lens.sort_values("Timestamp").reset_index(drop=True)
     observed_positions, matching_satellite, matching_satellite_positions, match_error, distances = \
         process_second(df_lens, current_time, observer_location, satellites)
     if matching_satellite is not None:
         generation = get_satellite_generation(matching_satellite)
-        # for second in range(duration_s+1):
-        df_lens = df_lens.set_index("Timestamp")
-        for i, ts in enumerate(pd.date_range(current_time, df_end_time, freq="s", inclusive="left")):
-            result = dict(Timestamp=ts,
+        for i, (_, row) in enumerate(df_lens.iterrows()):
+            result = dict(Timestamp=row.Timestamp,
                            Connected_Satellite=matching_satellite.name,
                            Generation=generation)
-            try:
-                row = df_lens.loc[ts]
-                result['Distance'] = round(distances[i], 4)
-                result['ObservedElevation'] = round(row.Elevation, 4)
-                result['MatchedElevation'] = round(matching_satellite_positions[i][0], 4)
-                result['ObservedAzimuth'] = round(row.Azimuth, 4)
-                result['MatchedAzimuth']= round(matching_satellite_positions[i][1], 4)
-            except KeyError:
-                pass
+            result['Distance'] = round(distances[i], 4)
+            result['ObservedElevation'] = round(row.Elevation, 4)
+            result['MatchedElevation'] = round(matching_satellite_positions[i][0], 4)
+            result['ObservedAzimuth'] = round(row.Azimuth, 4)
+            result['MatchedAzimuth'] = round(matching_satellite_positions[i][1], 4)
             results.append(result)
 
         print(f"{current_time} {duration_s} secs: {matching_satellite.name} ({generation}) error={match_error:.2f}")
@@ -228,31 +234,46 @@ def process_interval(args):
     return results
 
 def get_compute_intervals(df):
-    df = df.set_index("Timestamp")
-    current_start = df.index.min()
-    duration = 1
+    if df.empty:
+        return []
+    df = df.sort_values("Timestamp").reset_index(drop=True)
+    timestamps = df.Timestamp
+    if timestamps.duplicated().any():
+        raise ValueError(
+            "Multiple obstruction pixels share a timestamp; the single-track matcher "
+            "cannot order them. Multi-candidate track reconstruction is not supported.")
+    current_start = timestamps.iloc[0]
     compute_timestamps = []
-    # for ts, separation in zip(df.Timestamp.iloc[1:], df.Separation.iloc[1:]):
-    for ts in pd.date_range(current_start + pd.Timedelta(seconds=1), df.index.max(), freq="s"):
-        try:
-            separation = df.loc[ts].Separation
-        except KeyError:
-            separation = 0
-        if ts.second in [12, 27, 42, 57] or separation >= 3:
+    for index in range(1, len(df)):
+        ts = timestamps.iloc[index]
+        previous_ts = timestamps.iloc[index - 1]
+        separation = df.Separation.iloc[index]
+        # Keep the UTC RI indexing aligned with satellite.ri_index().
+        ri_changed = (int(ts.timestamp() - 12) // 15 !=
+                      int(previous_ts.timestamp() - 12) // 15)
+        if ri_changed or separation >= 3:
+            duration = (ts - current_start).total_seconds()
             compute_timestamps.append((current_start, duration))
             if duration != 15:
                 print(f"Schedule aperiodic interval: {compute_timestamps[-1]}")
             current_start = ts
-            duration = 1
-        else:
-            duration += 1
+    duration = (timestamps.iloc[-1] - current_start).total_seconds() + 1
     compute_timestamps.append((current_start, duration))
     return compute_timestamps
 
 # --- Process raw obstruction map and compute elevation and azimuth ---
 def process_obstruction_data(filename):
-    data = pd.read_csv(filename, sep=',', header=None, usecols=[0, 1, 2], names=['Timestamp', 'Y', 'X'])
-    data['Timestamp'] = pd.to_datetime(data['Timestamp'], utc=True)
+    try:
+        data = pd.read_csv(filename, sep=',', header=None, usecols=[0, 1, 2], names=['Timestamp', 'Y', 'X'])
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=['Timestamp', 'Y', 'X', 'Elevation', 'Azimuth'])
+    partial_coordinates = data[['Y', 'X']].isna().sum(axis=1) == 1
+    if partial_coordinates.any():
+        raise ValueError(f"Obstruction CSV {filename} has a row with only one coordinate")
+    data = data.dropna(subset=['Y', 'X']).copy()
+    data['Timestamp'] = pd.to_datetime(data['Timestamp'], format='mixed', utc=True)
+    if data.empty:
+        return pd.DataFrame(columns=['Timestamp', 'Y', 'X', 'Elevation', 'Azimuth'])
 
     observer_x, observer_y = 62, 62  # Assume this is the observer's pixel location
     pixel_to_degrees = (80/62)  # Conversion factor from pixel to degrees
@@ -268,7 +289,7 @@ def process_obstruction_data(filename):
         positions.append((point['Timestamp'], point['Y'], point['X'], elevation, azimuth))
 
     df_positions = pd.DataFrame(positions, columns=['Timestamp', 'Y', 'X', 'Elevation', 'Azimuth'])
-    return df_positions
+    return df_positions.sort_values('Timestamp').reset_index(drop=True)
 
 # ---
 
@@ -329,6 +350,10 @@ def find_jumps(df, threshold=3):
     return df.loc[aperiodic]
 
 def compute_separation(df):
+    if df.Timestamp.duplicated().any():
+        raise ValueError(
+            "Multiple obstruction pixels share a timestamp; the single-track matcher "
+            "cannot order them. Multi-candidate track reconstruction is not supported.")
     df["Elevation_shift"] = df.Elevation.shift()
     df["Azimuth_shift"] = df.Azimuth.shift()
     df["Separation"] = df.apply(lambda v: angular_separation(v.Elevation, v.Azimuth, v.Elevation_shift, v.Azimuth_shift), axis=1)
@@ -377,7 +402,13 @@ def main_cli():
             # results_nested = list(tqdm(map(process_interval, map_args), total=len(map_args), desc="parsing csvs"))
             results.extend(x for xs in results_nested if xs is not None for x in xs)
 
-            result_df = pd.DataFrame(results).sort_values("Timestamp")
+            result_df = pd.DataFrame(results)
+            if result_df.empty:
+                result_df = pd.DataFrame(columns=[
+                    'Timestamp', 'Connected_Satellite', 'Generation', 'Distance',
+                    'ObservedElevation', 'MatchedElevation', 'ObservedAzimuth', 'MatchedAzimuth'])
+            else:
+                result_df = result_df.sort_values("Timestamp")
             result_df.to_csv(args.o, index=False)
             print(f"Updated {args.o}")
 
