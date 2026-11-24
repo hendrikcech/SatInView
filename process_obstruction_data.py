@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.13"
-# dependencies = [
-#     "skyfield",
-#     "numpy",
-#     "pandas",
-#     "tqdm",
-# ]
-# ///
-
 from skyfield.api import load, wgs84, utc
 import pandas as pd
 import numpy as np

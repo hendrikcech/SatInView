@@ -1,0 +1,25 @@
+[project]
+name = "satinview"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio",
+    "numpy",
+    "pandas",
+    "schedule",
+    "scipy",
+    "skyfield",
+    "tqdm",
+    "typing-extensions",
+    "yagrc",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,4 +1,9 @@
+grpcio
 numpy
+pandas
+schedule
 scipy
 skyfield
-schedule
+tqdm
+typing-extensions
+yagrc
