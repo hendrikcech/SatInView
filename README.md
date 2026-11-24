@@ -147,3 +147,6 @@ uv run pytest -q
 ```
 
 The snapshot takes about 40 seconds on the development machine. See [`tests/fixtures/inference/README.md`](tests/fixtures/inference/README.md) for the baseline and comparison tolerances.
+
+## License
+MIT
